@@ -57,6 +57,7 @@ public class ConstantPropagation extends
     @Override
     public CPFact newBoundaryFact(CFG<Stmt> cfg) {
         // TODO - finish me
+        int i=0;
         return null;
     }
 
