@@ -23,16 +23,18 @@
 package pascal.taie.analysis.graph.callgraph;
 
 import pascal.taie.World;
+import pascal.taie.ir.IR;
 import pascal.taie.ir.proginfo.MethodRef;
 import pascal.taie.ir.stmt.Invoke;
+import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.language.classes.ClassHierarchy;
 import pascal.taie.language.classes.JClass;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.classes.Subsignature;
 
-import java.util.ArrayDeque;
-import java.util.Queue;
-import java.util.Set;
+import java.util.*;
+
+import static pascal.taie.analysis.graph.callgraph.CallKind.INTERFACE;
 
 /**
  * Implementation of the CHA algorithm.
@@ -51,6 +53,19 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
         DefaultCallGraph callGraph = new DefaultCallGraph();
         callGraph.addEntryMethod(entry);
         // TODO - finish me
+
+        IR ir = entry.getIR();         //main函数体的IR
+        for(Stmt stmt : ir.getStmts()) {
+            if(stmt instanceof Invoke invoke) {
+                Set<JMethod> jMethods = resolve(invoke);
+                for (JMethod jMethod : jMethods) {
+                    callGraph.addReachableMethod(jMethod);
+                    Edge<Invoke,JMethod> ee =new Edge<>(INTERFACE,invoke,jMethod);
+                    callGraph.addEdge(ee);
+                }
+            }
+        }
+
         return callGraph;
     }
 
@@ -59,7 +74,33 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
      */
     private Set<JMethod> resolve(Invoke callSite) {
         // TODO - finish me
-        return null;
+        Set<JMethod> returnedMethods = new HashSet<>();
+
+//        if(callSite.isStatic()){
+//
+//        }
+
+
+        Subsignature subsignature = callSite.getMethodRef().getSubsignature();
+        JClass declaringClass = callSite.getMethodRef().getDeclaringClass();
+
+        //这里要迭代地拿到所有在hierarchy里的declaringClass的直接以及间接子类
+
+        Collection<JClass> directJclasses = hierarchy.getDirectSubclassesOf(declaringClass);   //拿到直接子类
+        Stack<JClass> allsubclasses = new Stack<>();                                           //深度优先搜索第一层
+        for (JClass jClass : directJclasses) {
+            allsubclasses.push(jClass);
+        }
+        while (!allsubclasses.isEmpty()) {                                                     //深度优先搜索
+            JClass onesubjClass = allsubclasses.pop();
+            JMethod jMethod = dispatch(onesubjClass, subsignature);                            //通过dispatch拿到这个类往上层爬最终到达的方法
+            Collection<JClass> indirectJclasses = hierarchy.getDirectSubclassesOf(onesubjClass);  //得到这个类的子类
+            returnedMethods.add(jMethod);
+            for (JClass subsubJclass : indirectJclasses) {
+                allsubclasses.push(subsubJclass);
+            }
+        }
+        return returnedMethods;
     }
 
     /**
@@ -70,6 +111,13 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
      */
     private JMethod dispatch(JClass jclass, Subsignature subsignature) {
         // TODO - finish me
-        return null;
+        JMethod jMethod = jclass.getDeclaredMethod(subsignature);             //获取本身的类里面subsignature与参数一致的方法
+        if(jMethod != null) { return jMethod; }
+        else {
+            if (jclass.getSuperClass() != null) {                             //如果本身没找到，则往父类找
+                return dispatch(jclass.getSuperClass(), subsignature);
+            }
+        }
+        return null;                                                          //最终没找到，返回null
     }
 }
