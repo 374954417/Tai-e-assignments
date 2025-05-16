@@ -22,13 +22,16 @@
 
 package pascal.taie.analysis.dataflow.inter;
 
+import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
+import pascal.taie.analysis.graph.callgraph.Edge;
 import pascal.taie.analysis.graph.icfg.ICFG;
+import pascal.taie.analysis.graph.icfg.ICFGEdge;
 import pascal.taie.util.collection.SetQueue;
 
-import java.util.Queue;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Solver for inter-procedural data-flow analysis.
@@ -60,9 +63,72 @@ class InterSolver<Method, Node, Fact> {
 
     private void initialize() {
         // TODO - finish me
+        Stream<Method> entris = icfg.entryMethods();
+        Set<Method> entrySet = entris.collect(Collectors.toSet());
+        Set<Node> entrynodes = new HashSet<>();
+        for (Method m : entrySet) {
+            entrynodes.add(icfg.getEntryOf(m));
+        }
+
+        if(entrynodes.size() > 1) {throw new UnsupportedOperationException("more than one entry method!");}
+
+        for (Node node : icfg) {
+            if (entrynodes.contains(node)) {
+                result.setInFact(node, analysis.newBoundaryFact(node));
+            } else {
+                result.setInFact(node, analysis.newInitialFact()); // 若是引用类型，记得 copy！
+            }
+            result.setOutFact(node, analysis.newInitialFact());
+        }
+
     }
 
     private void doSolve() {
         // TODO - finish me
+
+        Stream<Method> entris = icfg.entryMethods();
+        Set<Method> entrySet = entris.collect(Collectors.toSet());
+        Set<Node> entrynodes = new HashSet<>();
+        for (Method m : entrySet) {
+            entrynodes.add(icfg.getEntryOf(m));
+        }
+
+        boolean changed = true;
+
+        Map<Node, Boolean> map= new HashMap<>();
+        Stack<Node> stack = new Stack<>();
+        for (Node node : icfg) {
+            stack.push(node);
+            map.put(node, true);
+        }
+
+        while(!stack.empty()) {
+            Node node = stack.pop();
+            System.out.println("node: " + node);
+            map.put(node, false);
+
+            changed = false;
+            if(!entrynodes.contains(node)) {
+                result.setInFact(node, analysis.newInitialFact());
+            }
+
+            for(ICFGEdge<Node> edge: icfg.getInEdgesOf(node)){
+                Fact processed = analysis.transferEdge(edge,result.getOutFact(edge.getSource()));
+                analysis.meetInto(processed,result.getInFact(node));
+            }
+
+//            analysis.meetInto(result.getInFact(node), result.getOutFact(node) );
+            boolean res = analysis.transferNode(node, result.getInFact(node),result.getOutFact(node));
+            changed = changed || res;
+            if (changed) {
+                for (Node succ : icfg.getSuccsOf(node)) {
+                    if(!map.get(succ)) {
+                        map.put(succ, true);
+                        stack.push(succ);
+                    }
+                }
+            }
+        }
     }
+
 }

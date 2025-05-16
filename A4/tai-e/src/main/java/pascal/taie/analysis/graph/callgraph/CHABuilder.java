@@ -24,7 +24,8 @@ package pascal.taie.analysis.graph.callgraph;
 
 import pascal.taie.World;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.proginfo.MethodRef;
+import pascal.taie.ir.exp.InvokeVirtual;
+import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.language.classes.ClassHierarchy;
@@ -34,7 +35,7 @@ import pascal.taie.language.classes.Subsignature;
 
 import java.util.*;
 
-import static pascal.taie.analysis.graph.callgraph.CallKind.INTERFACE;
+import static pascal.taie.analysis.graph.callgraph.CallKind.*;
 
 /**
  * Implementation of the CHA algorithm.
@@ -54,14 +55,29 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
         callGraph.addEntryMethod(entry);
         // TODO - finish me
 
-        IR ir = entry.getIR();         //main函数体的IR
-        for(Stmt stmt : ir.getStmts()) {
-            if(stmt instanceof Invoke invoke) {
-                Set<JMethod> jMethods = resolve(invoke);
-                for (JMethod jMethod : jMethods) {
-                    callGraph.addReachableMethod(jMethod);
-                    Edge<Invoke,JMethod> ee =new Edge<>(INTERFACE,invoke,jMethod);
-                    callGraph.addEdge(ee);
+        Stack<Invoke> worklist = new Stack<>();
+
+
+        callGraph.addReachableMethod(entry);                             //main函数的entry
+        for(Invoke invoke1 :callGraph.getCallSitesIn(entry)){            //把main函数中的所有函数调用全部插入worklist
+            worklist.push(invoke1);
+        }
+
+        System.out.println("start!!");
+
+        while(!worklist.empty()) {
+            Invoke invoke = worklist.pop();                                                  //如果语句类型是Invoke
+            Set<JMethod> jMethods = resolve(invoke);                                        //获取invoke所有callee
+            for (JMethod jMethod : jMethods) {                                              //遍历所有callee
+                CallKind callKind = CallGraphs.getCallKind(invoke);
+                boolean has_change = callGraph.addReachableMethod(jMethod);
+                Edge<Invoke,JMethod> ee =new Edge<>(callKind,invoke,jMethod);
+                callGraph.addEdge(ee);
+
+                if(has_change && !jMethod.isAbstract()){                                    //如果callee从未遍历到，则把callee函数体中的所有callsite插入worklist
+                    for(Invoke invoke1 :callGraph.getCallSitesIn(jMethod)){
+                        worklist.push(invoke1);
+                    }
                 }
             }
         }
@@ -76,28 +92,82 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
         // TODO - finish me
         Set<JMethod> returnedMethods = new HashSet<>();
 
-//        if(callSite.isStatic()){
-//
-//        }
-
-
-        Subsignature subsignature = callSite.getMethodRef().getSubsignature();
-        JClass declaringClass = callSite.getMethodRef().getDeclaringClass();
-
-        //这里要迭代地拿到所有在hierarchy里的declaringClass的直接以及间接子类
-
-        Collection<JClass> directJclasses = hierarchy.getDirectSubclassesOf(declaringClass);   //拿到直接子类
-        Stack<JClass> allsubclasses = new Stack<>();                                           //深度优先搜索第一层
-        for (JClass jClass : directJclasses) {
-            allsubclasses.push(jClass);
+        if(callSite.isStatic()) {
+            JClass jClass = callSite.getMethodRef().getDeclaringClass();
+            Subsignature subsignature = callSite.getMethodRef().getSubsignature();
+            JMethod jMethod = jClass.getDeclaredMethod(subsignature);                             //static只需要在本函数内找
+            if(jMethod != null)
+                returnedMethods.add(jMethod);
         }
-        while (!allsubclasses.isEmpty()) {                                                     //深度优先搜索
-            JClass onesubjClass = allsubclasses.pop();
-            JMethod jMethod = dispatch(onesubjClass, subsignature);                            //通过dispatch拿到这个类往上层爬最终到达的方法
-            Collection<JClass> indirectJclasses = hierarchy.getDirectSubclassesOf(onesubjClass);  //得到这个类的子类
-            returnedMethods.add(jMethod);
-            for (JClass subsubJclass : indirectJclasses) {
-                allsubclasses.push(subsubJclass);
+        else if(callSite.isSpecial()) {
+            JClass jClass = callSite.getMethodRef().getDeclaringClass();
+            Subsignature subsignature = callSite.getMethodRef().getSubsignature();
+            JMethod jMethod = dispatch(jClass,subsignature);                                     //special需要dispatch一下
+            if(jMethod != null)
+                returnedMethods.add(jMethod);
+        }
+        else if(callSite.isInterface()) {
+            JClass jClass = callSite.getMethodRef().getDeclaringClass();
+            Subsignature subsignature = callSite.getMethodRef().getSubsignature();
+
+            Set<JClass> visited = new HashSet<>();
+            Stack<JClass> worklist = new Stack<>();
+            worklist.push(jClass);
+            while(!worklist.empty()) {                                                            //interface分两种，遍历时如果遍历到interface，则把所有直接的子interface和impl加入worklist
+                JClass jClass1 = worklist.pop();
+                if(jClass1.isInterface()) {
+                    Collection<JClass> subinterfaces = hierarchy.getDirectSubinterfacesOf(jClass1);
+                    for(JClass subinterface : subinterfaces){
+                        if(!visited.contains(subinterface)) {
+                            worklist.push(subinterface);
+                            visited.add(subinterface);
+                        }
+                    }
+                    Collection<JClass> impls = hierarchy.getDirectImplementorsOf(jClass1);
+
+                    for(JClass impl : impls){
+                        if(!visited.contains(impl)) {
+                            worklist.push(impl);
+                            visited.add(impl);
+                        }
+                    }
+                }
+                else{                                                                            //如果是类，先把自己加入，再把所有子类加入worklist
+                    if(!jClass1.isAbstract())
+                        if(dispatch(jClass1, subsignature)!=null)
+                            returnedMethods.add(dispatch(jClass1, subsignature));
+                    Collection<JClass> subclasses = hierarchy.getDirectSubclassesOf(jClass1);
+                    for(JClass subclass : subclasses){
+                        if(!visited.contains(subclass)) {
+                            worklist.push(subclass);
+                            visited.add(subclass);
+                        }
+                    }
+                }
+            }
+
+
+        }
+        else if(callSite.isVirtual()) {                                                            //virtual的callee不止一种，需要遍历class hierarchy
+            Subsignature subsignature = callSite.getMethodRef().getSubsignature();
+            JClass declaringClass = callSite.getMethodRef().getDeclaringClass();
+            Stack<JClass> worklist = new Stack<>();                                           //深度优先搜索第一层
+            worklist.push(declaringClass);
+
+            System.out.println("callsite: "+callSite);
+            for(JClass jClass : worklist) {
+                System.out.println("VirtualJclass in Worklist : "+jClass);
+            }
+            while (!worklist.isEmpty()) {                                                          //深度优先搜索
+                JClass onesubjClass = worklist.pop();
+                JMethod jMethod = dispatch(onesubjClass, subsignature);                            //通过dispatch拿到这个类往上层爬最终到达的方法
+                if(jMethod != null)
+                    returnedMethods.add(jMethod);
+
+                Collection<JClass> indirectJclasses = hierarchy.getDirectSubclassesOf(onesubjClass);  //得到这个类的子类，并把子类压入worklist
+                for (JClass subsubJclass : indirectJclasses) {
+                    worklist.push(subsubJclass);
+                }
             }
         }
         return returnedMethods;
@@ -112,7 +182,7 @@ class CHABuilder implements CGBuilder<Invoke, JMethod> {
     private JMethod dispatch(JClass jclass, Subsignature subsignature) {
         // TODO - finish me
         JMethod jMethod = jclass.getDeclaredMethod(subsignature);             //获取本身的类里面subsignature与参数一致的方法
-        if(jMethod != null) { return jMethod; }
+        if(jMethod != null && !jMethod.isAbstract()) { return jMethod; }                               //如果找到了，直接返回
         else {
             if (jclass.getSuperClass() != null) {                             //如果本身没找到，则往父类找
                 return dispatch(jclass.getSuperClass(), subsignature);
